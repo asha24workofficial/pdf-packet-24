@@ -1,24 +1,20 @@
+// src/services/pdfService.ts
 import type { ProjectFormData, SelectedDocument, Document, ProductType } from '@/types'
 import { documentService } from './documentService'
 
-// Server-side PDF processing using Cloudflare Workers
 export class PDFService {
   private workerUrl: string
 
   constructor() {
-    // Use environment variable or fallback to local development
-    this.workerUrl = import.meta.env.VITE_WORKER_URL || 'http://localhost:8787'
+    this.workerUrl = import.meta.env.VITE_WORKER_URL || 'https://pdf-packet-generator.maxterra-pdf-builder.workers.dev'
+    console.log('Using Worker URL:', this.workerUrl)
   }
 
-  /**
-   * Generate PDF packet using Cloudflare Worker (server-side processing)
-   */
   async generatePacket(
     formData: Partial<ProjectFormData>,
     selectedDocuments: SelectedDocument[]
   ): Promise<Uint8Array> {
     try {
-      // Filter and sort selected documents
       const sortedDocs = selectedDocuments
         .filter(doc => doc.selected)
         .sort((a, b) => a.order - b.order)
@@ -30,38 +26,30 @@ export class PDFService {
       // Fetch file data for uploaded documents
       const documentsWithData = await Promise.all(
         sortedDocs.map(async (doc) => {
-          // Uploaded document - fetch from IndexedDB
-          const fileData = await documentService.exportDocumentAsBase64(doc.document.id)
-          return {
-            id: doc.id,
-            name: doc.document.name,
-            url: doc.document.url || '',
-            type: doc.document.type,
-            fileData: fileData || undefined,
+          try {
+            const fileData = await documentService.exportDocumentAsBase64(doc.document.id)
+            return {
+              id: doc.id,
+              name: doc.document.name,
+              url: doc.document.url || '',
+              type: doc.document.type,
+              fileData: fileData || undefined,
+            }
+          } catch (error) {
+            console.error(`Error processing document ${doc.document.name}:`, error)
+            throw new Error(`Failed to process document: ${doc.document.name}`)
           }
         })
       )
 
-      // Extract selected document names for PDF cover page
       const selectedDocumentNames = sortedDocs.map(doc => doc.document.name)
-
-      // Get ALL available documents from the selected product type
       const productType = formData.productType as ProductType
       const allCategoryDocs = await documentService.getDocumentsByProductType(productType)
-      const allAvailableDocuments = allCategoryDocs.map(doc => doc.name)
 
-      // Prepare request data for the worker
-      const requestData = {
+      // Prepare request payload
+      const payload = {
         projectData: {
-          projectName: formData.projectName || 'Untitled Project',
-          submittedTo: formData.submittedTo || 'N/A',
-          preparedBy: formData.preparedBy || 'N/A',
-          date: formData.date || new Date().toLocaleDateString(),
-          projectNumber: formData.projectNumber || 'N/A',
-          emailAddress: formData.emailAddress || 'N/A',
-          phoneNumber: formData.phoneNumber || 'N/A',
-          product: formData.product || '3/4-in (20mm)',
-          productType: formData.productType || 'structural-floor', // Send product type for dynamic title
+          ...formData,
           status: formData.status || {
             forReview: false,
             forApproval: false,
@@ -86,95 +74,58 @@ export class PDFService {
           },
         },
         documents: documentsWithData,
-        selectedDocumentNames, // Selected documents (will be checked)
-        allAvailableDocuments // All documents from category (checked or unchecked)
+        selectedDocumentNames,
+        allAvailableDocuments: allCategoryDocs.map(doc => doc.name)
       }
 
-      console.log('Sending request to worker:', this.workerUrl)
-      console.log('Request data:', requestData)
+      console.log('Sending request to worker:', {
+        url: `${this.workerUrl}/generate-packet`,
+        payload: {
+          ...payload,
+          documents: payload.documents.map(d => ({
+            ...d,
+            fileData: d.fileData ? `${d.fileData.substring(0, 30)}...` : 'No file data'
+          }))
+        }
+      })
 
-      // Send request to Cloudflare Worker
       const response = await fetch(`${this.workerUrl}/generate-packet`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestData),
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Worker request failed: ${response.status} ${response.statusText} - ${errorText}`)
+        let errorMessage = `Worker request failed: ${response.status} ${response.statusText}`
+        try {
+          const errorData = await response.json()
+          errorMessage += ` - ${errorData.message || JSON.stringify(errorData)}`
+        } catch (e) {
+          const text = await response.text()
+          errorMessage += ` - ${text}`
+        }
+        throw new Error(errorMessage)
       }
 
-      // Get PDF bytes from response
-      const pdfBytes = await response.arrayBuffer()
-      
-      if (pdfBytes.byteLength === 0) {
+      const pdfBuffer = await response.arrayBuffer()
+      if (pdfBuffer.byteLength === 0) {
         throw new Error('Received empty PDF from worker')
       }
 
-      console.log(`PDF generated successfully: ${pdfBytes.byteLength} bytes`)
-      
-      return new Uint8Array(pdfBytes)
+      console.log(`PDF generated successfully: ${pdfBuffer.byteLength} bytes`)
+      return new Uint8Array(pdfBuffer)
 
     } catch (error) {
-      console.error('Error generating packet:', error)
-
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      console.error('Error in generatePacket:', error)
+      if (error instanceof TypeError && error.message.includes('fetch')) {
         throw new Error(
           `Cannot connect to PDF Worker at ${this.workerUrl}. ` +
-          `Please ensure the worker is running by executing 'npm run dev' in the project root, ` +
-          `which will start both the frontend and worker simultaneously.`
+          `Please check your internet connection and make sure the worker is running.`
         )
       }
-
-      throw new Error(`Failed to generate PDF packet: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    }
-  }
-
-  /**
-   * Fetch document metadata dynamically
-   */
-  async fetchDocuments(): Promise<Document[]> {
-    try {
-      const response = await fetch('/documents.json')
-      if (!response.ok) {
-        throw new Error(`Failed to fetch documents: ${response.status} ${response.statusText}`)
-      }
-      const documents = await response.json()
-      return documents
-    } catch (error) {
-      console.error('Error fetching documents:', error)
-      throw new Error(`Failed to fetch document metadata: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    }
-  }
-
-  /**
-   * Download PDF to user's device
-   */
-  downloadPDF(pdfBytes: Uint8Array, filename: string): void {
-    try {
-      // Create blob from PDF bytes
-      const arrayBuffer = new ArrayBuffer(pdfBytes.length)
-      const view = new Uint8Array(arrayBuffer)
-      view.set(pdfBytes)
-      const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
-      
-      // Create download link
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      
-      // Clean up
-      URL.revokeObjectURL(url)
-    } catch (error) {
-      console.error('Error downloading PDF:', error)
-      throw new Error('Failed to download PDF')
+      throw error instanceof Error ? error : new Error('Failed to generate PDF packet')
     }
   }
 
@@ -183,18 +134,49 @@ export class PDFService {
    */
   previewPDF(pdfBytes: Uint8Array): void {
     try {
-      // Create blob from PDF bytes
-      const arrayBuffer = new ArrayBuffer(pdfBytes.length)
-      const view = new Uint8Array(arrayBuffer)
-      view.set(pdfBytes)
-      const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
-      
-      // Open in new tab
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
-      window.open(url, '_blank')
+      const newWindow = window.open(url, '_blank')
+      
+      // Revoke the object URL after the window is loaded
+      if (newWindow) {
+        newWindow.onload = () => URL.revokeObjectURL(url)
+      } else {
+        // Fallback in case popup is blocked
+        window.location.href = url
+        setTimeout(() => URL.revokeObjectURL(url), 100)
+      }
     } catch (error) {
       console.error('Error previewing PDF:', error)
-      throw new Error('Failed to preview PDF')
+      throw new Error('Failed to preview PDF. Please try again or download the file instead.')
+    }
+  }
+
+  /**
+   * Download PDF to user's device
+   */
+  downloadPDF(pdfBytes: Uint8Array, filename: string): void {
+    try {
+      if (!filename.endsWith('.pdf')) {
+        filename += '.pdf'
+      }
+      
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(link)
+        URL.revokeObjectURL(url)
+      }, 100)
+    } catch (error) {
+      console.error('Error downloading PDF:', error)
+      throw new Error('Failed to download PDF. Please try again.')
     }
   }
 }
