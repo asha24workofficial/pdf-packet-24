@@ -13,7 +13,7 @@ interface ProjectData {
   emailAddress: string;
   phoneNumber: string;
   product: string;
-  productType?: string; // 'structural-floor' or 'underlayment'
+  productType?: string;
   status: {
     forReview: boolean;
     forApproval: boolean;
@@ -44,14 +44,14 @@ interface DocumentRequest {
   name: string;
   url: string;
   type: string;
-  fileData?: string; // Base64 encoded file data (for uploaded documents)
+  fileData?: string;
 }
 
 interface GeneratePacketRequest {
   projectData: ProjectData;
   documents: DocumentRequest[];
-  selectedDocumentNames?: string[]; // Selected document names (checked)
-  allAvailableDocuments?: string[]; // All documents from category (checked or unchecked)
+  selectedDocumentNames?: string[];
+  allAvailableDocuments?: string[];
 }
 
 interface DocumentSection {
@@ -63,11 +63,11 @@ interface DocumentSection {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Handle CORS
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
+      'Content-Type': 'application/json'
     }
 
     if (request.method === 'OPTIONS') {
@@ -76,147 +76,169 @@ export default {
 
     if (request.method === 'POST' && new URL(request.url).pathname === '/generate-packet') {
       try {
-        const { projectData, documents, selectedDocumentNames, allAvailableDocuments }: GeneratePacketRequest = await request.json()
-
-        console.log(`Generating packet for: ${projectData.projectName}`)
-        console.log(`Processing ${documents.length} documents`)
-
-        // Create a new PDF document
-        const finalPdf = await PDFDocument.create()
-
-        // STEP 1: Load and add the 4-page submittal form template
-        console.log('Loading submittal form template...')
-        const templatePdf = await loadAndFillTemplate(projectData, selectedDocumentNames || [], allAvailableDocuments || [])
-        const submittalFormPages = await finalPdf.copyPages(templatePdf, templatePdf.getPageIndices())
-        submittalFormPages.forEach(page => finalPdf.addPage(page))
-        console.log(`Added ${submittalFormPages.length} pages from submittal form`)
-
-        // STEP 2: Add product information page
-        await addProductInfoPage(finalPdf, projectData)
-        const productInfoPageCount = 1
-
-        // Track document sections for Table of Contents
-        const documentSections: DocumentSection[] = []
-
-        // STEP 3: Reserve space for Table of Contents (will be inserted later)
-        const tocPosition = finalPdf.getPageCount()
-        let currentPageNumber = tocPosition + 2 // TOC will be at tocPosition+1, so sections start at +2
-
-        // STEP 4: Process each document with section dividers
-        for (const doc of documents) {
-          try {
-            console.log(`Processing: ${doc.name}`)
-
-            // Record the start page for this section (the divider page)
-            const sectionStartPage = currentPageNumber
-
-            // Add section divider page
-            await addSectionDivider(finalPdf, doc.name, doc.type)
-            currentPageNumber++
-
-            // Get PDF bytes - either from fileData or URL
-            let pdfBytes: ArrayBuffer | null = null
-            let documentPageCount = 0
-            
-            if (doc.fileData) {
-              // Uploaded document - decode base64
-              console.log(`Loading document from embedded data: ${doc.name}`)
-              try {
-                const binaryString = atob(doc.fileData)
-                const bytes = new Uint8Array(binaryString.length)
-                for (let i = 0; i < binaryString.length; i++) {
-                  bytes[i] = binaryString.charCodeAt(i)
-                }
-                pdfBytes = bytes.buffer
-                console.log(`Decoded ${pdfBytes.byteLength} bytes from base64`)
-              } catch (decodeError) {
-                console.error(`Failed to decode base64 data for ${doc.name}:`, decodeError)
-                pdfBytes = null
-              }
-            } else if (doc.url) {
-              // Legacy document - fetch from URL
-              console.log(`Fetching document from URL: ${doc.url}`)
-              pdfBytes = await fetchPDF(doc.url)
-            }
-
-            if (pdfBytes) {
-              const sourcePdf = await PDFDocument.load(pdfBytes)
-              const pageIndices = sourcePdf.getPageIndices()
-
-              // Copy pages one by one for better error handling
-              for (let i = 0; i < pageIndices.length; i++) {
-                try {
-                  const [copiedPage] = await finalPdf.copyPages(sourcePdf, [pageIndices[i]])
-                  finalPdf.addPage(copiedPage)
-                  currentPageNumber++
-                  documentPageCount++
-                } catch (pageError) {
-                  console.warn(`Failed to copy page ${i + 1} from ${doc.name}:`, pageError)
-                  await addErrorPage(finalPdf, doc.name, `Page ${i + 1} could not be processed`)
-                  currentPageNumber++
-                  documentPageCount++
-                }
-              }
-
-              console.log(`Successfully processed ${pageIndices.length} pages from ${doc.name}`)
-            } else {
-              // Add error page if PDF couldn't be loaded
-              await addErrorPage(finalPdf, doc.name, 'Document could not be loaded')
-              currentPageNumber++
-              documentPageCount++
-            }
-
-            // Record this document section for TOC
-            documentSections.push({
-              name: doc.name,
-              type: doc.type,
-              startPage: sectionStartPage,
-              pageCount: documentPageCount + 1 // +1 for divider page
-            })
-
-          } catch (docError) {
-            console.error(`Error processing ${doc.name}:`, docError)
-            await addErrorPage(finalPdf, doc.name, 'Document processing failed')
-          }
+        if (!request.body) {
+          return new Response(
+            JSON.stringify({ error: 'No request body provided' }),
+            { status: 400, headers: corsHeaders }
+          )
         }
 
-        // STEP 5: Insert Table of Contents at the reserved position
-        console.log('Creating Table of Contents...')
-        const tocPage = await createTableOfContents(finalPdf, documentSections, tocPosition + 2)
-        finalPdf.insertPage(tocPosition, tocPage)
+        let requestData: GeneratePacketRequest
+        try {
+          requestData = await request.json()
+          if (!requestData.projectData) {
+            throw new Error('Missing required field: projectData')
+          }
+          requestData.documents = requestData.documents || []
+        } catch (error) {
+          return new Response(
+            JSON.stringify({ 
+              error: 'Invalid JSON payload',
+              details: error instanceof Error ? error.message : 'Unknown error'
+            }),
+            { status: 400, headers: corsHeaders }
+          )
+        }
 
-        // STEP 6: Add selective page numbers (submittal form + product info + TOC + section dividers only)
-        await addSelectivePageNumbers(finalPdf, submittalFormPages.length + productInfoPageCount, documentSections)
+        const { projectData, documents, selectedDocumentNames = [], allAvailableDocuments = [] } = requestData
 
-        // Generate final PDF
-        const pdfBytes = await finalPdf.save()
+        try {
+          console.log(`Generating packet for: ${projectData.projectName || 'Untitled Project'}`)
+          console.log(`Processing ${documents.length} documents`)
 
-        console.log(`Packet generated successfully: ${pdfBytes.length} bytes`)
+          const finalPdf = await PDFDocument.create()
 
-        return new Response(pdfBytes, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/pdf',
-            'Content-Disposition': `attachment; filename="${projectData.projectName.replace(/[^a-zA-Z0-9]/g, '_')}_Packet.pdf"`,
-            'Content-Length': pdfBytes.length.toString(),
-          },
-        })
+          try {
+            const templatePdf = await loadAndFillTemplate(projectData, selectedDocumentNames, allAvailableDocuments)
+            const submittalFormPages = await finalPdf.copyPages(templatePdf, templatePdf.getPageIndices())
+            submittalFormPages.forEach(page => finalPdf.addPage(page))
+            console.log(`Added ${submittalFormPages.length} pages from submittal form`)
+          } catch (templateError) {
+            console.error('Error loading template:', templateError)
+            await addErrorPage(finalPdf, 'Template Error', 'Failed to load template. Using blank document.')
+          }
+
+          try {
+            await addProductInfoPage(finalPdf, projectData)
+          } catch (productInfoError) {
+            console.error('Error adding product info:', productInfoError)
+            await addErrorPage(finalPdf, 'Product Info', 'Failed to add product information.')
+          }
+
+          const documentSections: DocumentSection[] = []
+          let currentPageNumber = finalPdf.getPageCount() + 1
+
+          for (const doc of documents) {
+            try {
+              const sectionStartPage = currentPageNumber
+              await addSectionDivider(finalPdf, doc.name, doc.type)
+              currentPageNumber++
+
+              if (doc.fileData) {
+                try {
+                  const binaryString = atob(doc.fileData)
+                  const bytes = new Uint8Array(binaryString.length)
+                  for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i)
+                  }
+                  const sourcePdf = await PDFDocument.load(bytes.buffer)
+                  const pageIndices = sourcePdf.getPageIndices()
+                  const pages = await finalPdf.copyPages(sourcePdf, pageIndices)
+                  pages.forEach(page => finalPdf.addPage(page))
+                  currentPageNumber += pages.length
+                  
+                  documentSections.push({
+                    name: doc.name,
+                    type: doc.type,
+                    startPage: sectionStartPage,
+                    pageCount: pages.length + 1
+                  })
+                } catch (docError) {
+                  console.error(`Error processing document ${doc.name}:` , docError)
+                  await addErrorPage(finalPdf, doc.name, 'Failed to process document')
+                  currentPageNumber++
+                }
+              } else if (doc.url) {
+                try {
+                  const pdfBytes = await fetchPDF(doc.url)
+                  if (pdfBytes) {
+                    const sourcePdf = await PDFDocument.load(pdfBytes)
+                    const pageIndices = sourcePdf.getPageIndices()
+                    const pages = await finalPdf.copyPages(sourcePdf, pageIndices)
+                    pages.forEach(page => finalPdf.addPage(page))
+                    currentPageNumber += pages.length
+                    
+                    documentSections.push({
+                      name: doc.name,
+                      type: doc.type,
+                      startPage: sectionStartPage,
+                      pageCount: pages.length + 1
+                    })
+                  } else {
+                    throw new Error('Failed to fetch document from URL')
+                  }
+                } catch (urlError) {
+                  console.error(`Error processing document from URL ${doc.name}:`, urlError)
+                  await addErrorPage(finalPdf, doc.name, 'Failed to load document from URL')
+                  currentPageNumber++
+                }
+              }
+            } catch (error) {
+              console.error(`Error adding document ${doc.name}:`, error)
+              await addErrorPage(finalPdf, doc.name, 'Failed to add document')
+              currentPageNumber++
+            }
+          }
+
+          const tocPageNumber = finalPdf.getPageCount() + 1
+          const tocPage = await createTableOfContents(finalPdf, documentSections, tocPageNumber)
+          finalPdf.insertPage(tocPageNumber - 1, tocPage)
+
+          await addSelectivePageNumbers(
+            finalPdf,
+            finalPdf.getPageCount() - documentSections.length,
+            documentSections
+          )
+
+          const pdfBytes = await finalPdf.save()
+          console.log(`Packet generated successfully: ${pdfBytes.length} bytes`)
+
+          return new Response(pdfBytes, {
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/pdf',
+              'Content-Disposition': `attachment; filename="${(projectData.projectName || 'packet').replace(/[^a-z0-9]/gi, '_')}.pdf"`,
+              'Content-Length': pdfBytes.length.toString(),
+            }
+          })
+
+        } catch (error) {
+          console.error('Error generating PDF:', error)
+          return new Response(
+            JSON.stringify({ 
+              error: 'Failed to generate packet',
+              details: error instanceof Error ? error.message : 'Unknown error'
+            }),
+            { status: 500, headers: corsHeaders }
+          )
+        }
 
       } catch (error) {
-        console.error('Error generating packet:', error)
-        return new Response(JSON.stringify({
-          error: 'Failed to generate packet',
-          details: error instanceof Error ? error.message : 'Unknown error'
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        })
+        console.error('Unexpected error:', error)
+        return new Response(
+          JSON.stringify({ 
+            error: 'Internal server error',
+            details: error instanceof Error ? error.message : 'Unknown error'
+          }),
+          { status: 500, headers: corsHeaders }
+        )
       }
     }
 
-    return new Response('PDF Packet Generator Worker', {
-      headers: corsHeaders,
-    })
+    return new Response(
+      JSON.stringify({ error: 'Not found' }),
+      { status: 404, headers: corsHeaders }
+    )
   },
 }
 
@@ -1020,6 +1042,7 @@ async function addDividerPage(pdf: PDFDocument, documentName: string, documentTy
   })
 }
 
+// Helper function to add error pages
 async function addErrorPage(pdf: PDFDocument, documentName: string, errorMessage: string) {
   const page = pdf.addPage(PageSizes.Letter)
   const { width, height } = page.getSize()

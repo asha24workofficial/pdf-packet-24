@@ -15,6 +15,7 @@ export class PDFService {
     selectedDocuments: SelectedDocument[]
   ): Promise<Uint8Array> {
     try {
+      // Filter and sort selected documents
       const sortedDocs = selectedDocuments
         .filter(doc => doc.selected)
         .sort((a, b) => a.order - b.order)
@@ -30,10 +31,10 @@ export class PDFService {
             const fileData = await documentService.exportDocumentAsBase64(doc.document.id)
             return {
               id: doc.id,
-              name: doc.document.name,
+              name: doc.document.name || 'Unnamed Document',
               url: doc.document.url || '',
-              type: doc.document.type,
-              fileData: fileData || undefined,
+              type: doc.document.type || 'other',
+              fileData: fileData || '',
             }
           } catch (error) {
             console.error(`Error processing document ${doc.document.name}:`, error)
@@ -42,52 +43,69 @@ export class PDFService {
         })
       )
 
-      const selectedDocumentNames = sortedDocs.map(doc => doc.document.name)
-      const productType = formData.productType as ProductType
+      const selectedDocumentNames = sortedDocs.map(doc => doc.document.name || 'Unnamed Document')
+      const productType = formData.productType as ProductType || 'structural-floor'
       const allCategoryDocs = await documentService.getDocumentsByProductType(productType)
 
-      // Prepare request payload
+      // Prepare request payload with all required fields and defaults
       const payload = {
         projectData: {
-          ...formData,
-          status: formData.status || {
-            forReview: false,
-            forApproval: false,
-            forRecord: false,
-            forInformationOnly: false,
+          // Required fields with defaults
+          projectName: formData.projectName || 'Untitled Project',
+          submittedTo: formData.submittedTo || 'N/A',
+          preparedBy: formData.preparedBy || 'N/A',
+          date: formData.date || new Date().toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          }),
+          projectNumber: formData.projectNumber || 'N/A',
+          emailAddress: formData.emailAddress || 'N/A',
+          phoneNumber: formData.phoneNumber || 'N/A',
+          product: formData.product || '3/4-in (20mm)',
+          productType: productType,
+          
+          // Status with defaults
+          status: {
+            forReview: formData.status?.forReview ?? false,
+            forApproval: formData.status?.forApproval ?? false,
+            forRecord: formData.status?.forRecord ?? false,
+            forInformationOnly: formData.status?.forInformationOnly ?? false,
           },
-          submittalType: formData.submittalType || {
-            tds: false,
-            threePartSpecs: false,
-            testReportIccEsr5194: false,
-            testReportIccEsl1645: false,
-            fireAssembly: false,
-            fireAssembly01: false,
-            fireAssembly02: false,
-            fireAssembly03: false,
-            msds: false,
-            leedGuide: false,
-            installationGuide: false,
-            warranty: false,
-            samples: false,
-            other: false,
-          },
+          
+          // Submittal type with defaults
+          submittalType: {
+            tds: formData.submittalType?.tds ?? false,
+            threePartSpecs: formData.submittalType?.threePartSpecs ?? false,
+            testReportIccEsr5194: formData.submittalType?.testReportIccEsr5194 ?? false,
+            testReportIccEsl1645: formData.submittalType?.testReportIccEsl1645 ?? false,
+            fireAssembly: formData.submittalType?.fireAssembly ?? false,
+            fireAssembly01: formData.submittalType?.fireAssembly01 ?? false,
+            fireAssembly02: formData.submittalType?.fireAssembly02 ?? false,
+            fireAssembly03: formData.submittalType?.fireAssembly03 ?? false,
+            msds: formData.submittalType?.msds ?? false,
+            leedGuide: formData.submittalType?.leedGuide ?? false,
+            installationGuide: formData.submittalType?.installationGuide ?? false,
+            warranty: formData.submittalType?.warranty ?? false,
+            samples: formData.submittalType?.samples ?? false,
+            other: formData.submittalType?.other ?? false,
+            otherText: formData.submittalType?.otherText || '',
+          }
         },
+        
+        // Process documents
         documents: documentsWithData,
         selectedDocumentNames,
-        allAvailableDocuments: allCategoryDocs.map(doc => doc.name)
-      }
+        allAvailableDocuments: allCategoryDocs.map(doc => doc.name).filter(Boolean)
+      };
 
-      console.log('Sending request to worker:', {
-        url: `${this.workerUrl}/generate-packet`,
-        payload: {
-          ...payload,
-          documents: payload.documents.map(d => ({
-            ...d,
-            fileData: d.fileData ? `${d.fileData.substring(0, 30)}...` : 'No file data'
-          }))
-        }
-      })
+      console.log('Sending request to worker with payload:', {
+        ...payload,
+        documents: payload.documents.map(d => ({
+          ...d,
+          fileData: d.fileData ? `${d.fileData.substring(0, 30)}...` : 'No file data'
+        }))
+      });
 
       const response = await fetch(`${this.workerUrl}/generate-packet`, {
         method: 'POST',
@@ -95,37 +113,37 @@ export class PDFService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
-      })
+      });
 
       if (!response.ok) {
-        let errorMessage = `Worker request failed: ${response.status} ${response.statusText}`
+        let errorMessage = `Worker request failed: ${response.status} ${response.statusText}`;
         try {
-          const errorData = await response.json()
-          errorMessage += ` - ${errorData.message || JSON.stringify(errorData)}`
+          const errorData = await response.json();
+          errorMessage += ` - ${errorData.message || JSON.stringify(errorData)}`;
         } catch (e) {
-          const text = await response.text()
-          errorMessage += ` - ${text}`
+          const text = await response.text();
+          errorMessage += ` - ${text}`;
         }
-        throw new Error(errorMessage)
+        throw new Error(errorMessage);
       }
 
-      const pdfBuffer = await response.arrayBuffer()
+      const pdfBuffer = await response.arrayBuffer();
       if (pdfBuffer.byteLength === 0) {
-        throw new Error('Received empty PDF from worker')
+        throw new Error('Received empty PDF from worker');
       }
 
-      console.log(`PDF generated successfully: ${pdfBuffer.byteLength} bytes`)
-      return new Uint8Array(pdfBuffer)
+      console.log(`PDF generated successfully: ${pdfBuffer.byteLength} bytes`);
+      return new Uint8Array(pdfBuffer);
 
     } catch (error) {
-      console.error('Error in generatePacket:', error)
+      console.error('Error in generatePacket:', error);
       if (error instanceof TypeError && error.message.includes('fetch')) {
         throw new Error(
           `Cannot connect to PDF Worker at ${this.workerUrl}. ` +
-          `Please check your internet connection and make sure the worker is running.`
-        )
+          'Please check your internet connection and make sure the worker is running.'
+        );
       }
-      throw error instanceof Error ? error : new Error('Failed to generate PDF packet')
+      throw error instanceof Error ? error : new Error('Failed to generate PDF packet');
     }
   }
 
@@ -134,21 +152,19 @@ export class PDFService {
    */
   previewPDF(pdfBytes: Uint8Array): void {
     try {
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
-      const url = URL.createObjectURL(blob)
-      const newWindow = window.open(url, '_blank')
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const newWindow = window.open(url, '_blank');
       
-      // Revoke the object URL after the window is loaded
       if (newWindow) {
-        newWindow.onload = () => URL.revokeObjectURL(url)
+        newWindow.onload = () => URL.revokeObjectURL(url);
       } else {
-        // Fallback in case popup is blocked
-        window.location.href = url
-        setTimeout(() => URL.revokeObjectURL(url), 100)
+        window.location.href = url;
+        setTimeout(() => URL.revokeObjectURL(url), 100);
       }
     } catch (error) {
-      console.error('Error previewing PDF:', error)
-      throw new Error('Failed to preview PDF. Please try again or download the file instead.')
+      console.error('Error previewing PDF:', error);
+      throw new Error('Failed to preview PDF. Please try again or download the file instead.');
     }
   }
 
@@ -158,28 +174,27 @@ export class PDFService {
   downloadPDF(pdfBytes: Uint8Array, filename: string): void {
     try {
       if (!filename.endsWith('.pdf')) {
-        filename += '.pdf'
+        filename += '.pdf';
       }
       
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
       
-      // Clean up
       setTimeout(() => {
-        document.body.removeChild(link)
-        URL.revokeObjectURL(url)
-      }, 100)
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 100);
     } catch (error) {
-      console.error('Error downloading PDF:', error)
-      throw new Error('Failed to download PDF. Please try again.')
+      console.error('Error downloading PDF:', error);
+      throw new Error('Failed to download PDF. Please try again.');
     }
   }
 }
 
 // Export singleton instance
-export const pdfService = new PDFService()
+export const pdfService = new PDFService();
