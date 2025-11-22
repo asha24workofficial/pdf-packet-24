@@ -2,16 +2,16 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Upload, Trash2, Edit2, Save, X, FileText, Lock, Unlock, Eye, EyeOff, FolderOpen } from 'lucide-react'
 import { documentService } from '@/services/documentService'
+import { adminAuthService } from '@/services/adminAuthService'
 import type { Document, DocumentType, ProductType } from '@/types'
 
 interface AdminPanelProps {
   onClose?: () => void
 }
 
-const ADMIN_PASSWORD = 'admin123'
-
 export default function AdminPanel({ onClose }: AdminPanelProps) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [documents, setDocuments] = useState<Document[]>([])
@@ -22,12 +22,16 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
   const [editForm, setEditForm] = useState<Partial<Document>>({})
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [authenticatedEmail, setAuthenticatedEmail] = useState<string>('')
 
   useEffect(() => {
-    if (isAuthenticated) {
+    const currentAdmin = adminAuthService.getCurrentAdmin()
+    if (currentAdmin) {
+      setIsAuthenticated(true)
+      setAuthenticatedEmail(currentAdmin.email)
       loadDocuments()
     }
-  }, [isAuthenticated])
+  }, [])
 
   const loadDocuments = async () => {
     try {
@@ -42,14 +46,33 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
     }
   }
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (password === ADMIN_PASSWORD) {
+    setLoading(true)
+    setError(null)
+
+    const result = await adminAuthService.loginAdmin(email, password)
+
+    if (result.success) {
       setIsAuthenticated(true)
-      setError(null)
+      setAuthenticatedEmail(email)
+      setEmail('')
+      setPassword('')
+      await loadDocuments()
     } else {
-      setError('Invalid password')
+      setError(result.error || 'Login failed')
     }
+
+    setLoading(false)
+  }
+
+  const handleLogout = () => {
+    adminAuthService.logout()
+    setIsAuthenticated(false)
+    setAuthenticatedEmail('')
+    setEmail('')
+    setPassword('')
+    setDocuments([])
   }
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -64,13 +87,13 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
     const results = {
       successful: 0,
       failed: 0,
-      errors: [] as string[]
+      errors: [] as string[],
     }
 
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i]
-        
+
         try {
           await documentService.uploadDocument(file, selectedCategory, (progress) => {
             setUploadProgress(Math.round((i + progress / 100) / files.length * 100))
@@ -85,9 +108,11 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
       }
 
       if (results.successful > 0) {
-        setSuccess(`Successfully uploaded ${results.successful} document(s) to ${selectedCategory === 'structural-floor' ? 'Structural Floor' : 'Underlayment'}`)
+        setSuccess(
+          `Successfully uploaded ${results.successful} document(s) to ${selectedCategory === 'structural-floor' ? 'Structural Floor' : 'Underlayment'}`
+        )
       }
-      
+
       if (results.failed > 0) {
         setError(`Failed to upload ${results.failed} file(s):\n${results.errors.join('\n')}`)
       }
@@ -95,7 +120,7 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
       if (results.successful > 0) {
         await loadDocuments()
       }
-      
+
       e.target.value = ''
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
@@ -103,7 +128,7 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
     } finally {
       setLoading(false)
       setUploadProgress(0)
-      
+
       setTimeout(() => {
         setSuccess(null)
         setError(null)
@@ -171,11 +196,9 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
     setEditForm({})
   }
 
-  // Filter documents by category
-  const structuralFloorDocs = documents.filter(doc => doc.productType === 'structural-floor')
-  const underlaymentDocs = documents.filter(doc => doc.productType === 'underlayment')
+  const structuralFloorDocs = documents.filter((doc) => doc.product_type === 'structural-floor')
+  const underlaymentDocs = documents.filter((doc) => doc.product_type === 'underlayment')
 
-  // Login Screen
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center p-4">
@@ -187,10 +210,8 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
           <div className="flex items-center justify-center mb-6">
             <Lock className="w-12 h-12 text-blue-500" />
           </div>
-          <h1 className="text-2xl font-bold text-center mb-6 text-gray-900 dark:text-white">
-            Admin Access
-          </h1>
-          
+          <h1 className="text-2xl font-bold text-center mb-6 text-gray-900 dark:text-white">Admin Access</h1>
+
           {error && (
             <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg text-sm">
               {error}
@@ -199,17 +220,29 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
 
           <form onSubmit={handleLogin}>
             <div className="mb-4">
-              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
-                Password
-              </label>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white"
+                placeholder="Enter your email"
+                required
+                disabled={loading}
+              />
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Password</label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full px-4 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white"
-                  placeholder="Enter admin password"
+                  placeholder="Enter your password"
                   required
+                  disabled={loading}
                 />
                 <button
                   type="button"
@@ -223,10 +256,11 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
 
             <button
               type="submit"
-              className="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+              disabled={loading}
+              className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-blue-400 text-white font-medium py-2 px-4 rounded-lg transition-colors"
             >
               <Unlock className="inline-block w-5 h-5 mr-2" />
-              Login
+              {loading ? 'Logging in...' : 'Login'}
             </button>
           </form>
 
@@ -243,33 +277,26 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
     )
   }
 
-  // Admin Dashboard
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 p-4">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-              Document Management
-            </h1>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Document Management</h1>
             <p className="text-gray-600 dark:text-gray-400">
-              Upload and manage PDF documents by category
+              Logged in as: <span className="font-medium">{authenticatedEmail}</span>
             </p>
           </div>
           <div className="flex gap-3">
             <button
-              onClick={() => setIsAuthenticated(false)}
+              onClick={handleLogout}
               className="px-4 py-2 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
             >
               <Lock className="inline-block w-5 h-5 mr-2" />
               Logout
             </button>
             {onClose && (
-              <button
-                onClick={onClose}
-                className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg"
-              >
+              <button onClick={onClose} className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg">
                 <X className="inline-block w-5 h-5 mr-2" />
                 Close
               </button>
@@ -277,7 +304,6 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
           </div>
         </div>
 
-        {/* Messages */}
         <AnimatePresence>
           {error && (
             <motion.div
@@ -301,13 +327,9 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
           )}
         </AnimatePresence>
 
-        {/* Upload Section */}
         <div className="glass-card dark:glass-card-dark p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">
-            Upload Documents
-          </h2>
-          
-          {/* Category Selector */}
+          <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Upload Documents</h2>
+
           <div className="mb-4">
             <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
               Select Category
@@ -337,9 +359,7 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
               />
               <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 dark:hover:border-blue-400 transition-colors cursor-pointer">
                 <Upload className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-                <p className="text-gray-600 dark:text-gray-400 mb-2">
-                  Click to upload PDF documents
-                </p>
+                <p className="text-gray-600 dark:text-gray-400 mb-2">Click to upload PDF documents</p>
                 <p className="text-sm text-gray-500 dark:text-gray-500">
                   Will be added to: <strong>{selectedCategory === 'structural-floor' ? 'Structural Floor' : 'Underlayment'}</strong>
                 </p>
@@ -350,12 +370,8 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
           {uploadProgress > 0 && (
             <div className="mt-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-600 dark:text-gray-400">
-                  Uploading...
-                </span>
-                <span className="text-sm font-medium text-gray-900 dark:text-white">
-                  {uploadProgress}%
-                </span>
+                <span className="text-sm text-gray-600 dark:text-gray-400">Uploading...</span>
+                <span className="text-sm font-medium text-gray-900 dark:text-white">{uploadProgress}%</span>
               </div>
               <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                 <div
@@ -367,9 +383,7 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
           )}
         </div>
 
-        {/* Documents by Category */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Structural Floor Documents */}
           <DocumentCategory
             title="Structural Floor Documents"
             icon="🏗️"
@@ -385,7 +399,6 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
             onEditFormChange={setEditForm}
           />
 
-          {/* Underlayment Documents */}
           <DocumentCategory
             title="Underlayment Documents"
             icon="📋"
@@ -406,7 +419,6 @@ export default function AdminPanel({ onClose }: AdminPanelProps) {
   )
 }
 
-// Document Category Component
 interface DocumentCategoryProps {
   title: string
   icon: string
@@ -434,19 +446,19 @@ function DocumentCategory({
   onSave,
   onCancel,
   onDelete,
-  onEditFormChange
+  onEditFormChange,
 }: DocumentCategoryProps) {
   const colorClasses = {
     green: {
       bg: 'bg-green-100 dark:bg-green-900/30',
       text: 'text-green-700 dark:text-green-300',
-      border: 'border-green-300 dark:border-green-700'
+      border: 'border-green-300 dark:border-green-700',
     },
     purple: {
       bg: 'bg-purple-100 dark:bg-purple-900/30',
       text: 'text-purple-700 dark:text-purple-300',
-      border: 'border-purple-300 dark:border-purple-700'
-    }
+      border: 'border-purple-300 dark:border-purple-700',
+    },
   }
 
   const colors = colorClasses[color]
@@ -457,9 +469,7 @@ function DocumentCategory({
         <div className="flex items-center gap-3">
           <span className="text-2xl">{icon}</span>
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-              {title}
-            </h2>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">{title}</h2>
             <p className="text-sm text-gray-600 dark:text-gray-400">
               {documents.length} {documents.length === 1 ? 'document' : 'documents'}
             </p>
@@ -468,9 +478,7 @@ function DocumentCategory({
       </div>
 
       {loading && documents.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">
-          Loading documents...
-        </div>
+        <div className="text-center py-12 text-gray-500">Loading documents...</div>
       ) : documents.length === 0 ? (
         <div className="text-center py-12 text-gray-500">
           <FolderOpen className="w-16 h-16 mx-auto mb-4 text-gray-400" />
@@ -488,7 +496,6 @@ function DocumentCategory({
               className={`border ${colors.border} rounded-lg p-4 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors`}
             >
               {editingDoc === doc.id ? (
-                // Edit Mode
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-4">
                     <div>
@@ -551,21 +558,14 @@ function DocumentCategory({
                   </div>
                 </div>
               ) : (
-                // View Mode
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-4 flex-1">
                     <FileText className="w-8 h-8 text-blue-500 flex-shrink-0 mt-1" />
                     <div className="flex-1">
-                      <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
-                        {doc.name}
-                      </h3>
-                      <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                        {doc.description}
-                      </p>
+                      <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{doc.name}</h3>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">{doc.description}</p>
                       <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-500">
-                        <span className={`px-2 py-1 ${colors.bg} ${colors.text} rounded`}>
-                          {doc.type}
-                        </span>
+                        <span className={`px-2 py-1 ${colors.bg} ${colors.text} rounded`}>{doc.type}</span>
                         <span>{(doc.size / 1024 / 1024).toFixed(2)} MB</span>
                         <span className="truncate max-w-xs">{doc.filename}</span>
                       </div>

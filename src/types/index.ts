@@ -50,13 +50,16 @@ export interface Document {
   name: string;
   description: string;
   filename: string;
-  url: string; // Legacy support - empty for uploaded files
+  url: string;
   size: number;
   type: string;
   required: boolean;
   products: string[];
-  productType: ProductType; // Single category: 'structural-floor' or 'underlayment'
-  fileData?: string; // Base64 encoded file data (optional, used for worker communication)
+  product_type: ProductType;
+  category_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  fileData?: string;
 }
 
 export interface SelectedDocument {

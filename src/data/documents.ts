@@ -27,7 +27,7 @@ export async function reloadDocuments(): Promise<void> {
 
 // Get documents by product type
 export function getDocumentsByProductType(productType: ProductType): Document[] {
-  return availableDocuments.filter(doc => doc.productType === productType);
+  return availableDocuments.filter(doc => doc.product_type === productType);
 }
 
 export { availableDocuments }

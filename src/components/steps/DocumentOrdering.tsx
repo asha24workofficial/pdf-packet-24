@@ -178,7 +178,7 @@ export default function DocumentOrdering({
     return availableDocuments.filter(doc => {
       // Filter by product type first - now using single productType field
       const matchesProductType = formData.productType 
-        ? doc.productType === formData.productType
+        ? doc.product_type === formData.productType
         : true
       
       const matchesSearch = doc.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
