@@ -68,6 +68,43 @@ class DocumentService {
   }
 
   /**
+   * Export a document as Base64 string
+   */
+  async exportDocumentAsBase64(id: string): Promise<string> {
+    try {
+      const doc = await this.getDocument(id)
+      if (!doc) {
+        throw new Error('Document not found')
+      }
+
+      if (!doc.url) {
+        throw new Error('Document URL is missing')
+      }
+
+      const response = await fetch(doc.url)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch document: ${response.statusText}`)
+      }
+
+      const blob = await response.blob()
+      const reader = new FileReader()
+
+      return new Promise((resolve, reject) => {
+        reader.onloadend = () => {
+          const base64 = reader.result as string
+          const fileData = base64.split(',')[1]
+          resolve(fileData)
+        }
+        reader.onerror = () => reject(new Error('Failed to read file'))
+        reader.readAsDataURL(blob)
+      })
+    } catch (error) {
+      console.error(`Failed to export document ${id} as Base64:`, error)
+      throw error
+    }
+  }
+
+  /**
    * Validate PDF file
    */
   private async validatePDF(file: File): Promise<{ valid: boolean; error?: string }> {
